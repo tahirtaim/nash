@@ -53,11 +53,8 @@ class CartController extends Controller
         $id = Auth::guard('api')->user()->id;
         $cart_items = Cart::with(['product', 'offer'])->where('user_id', $id)->get();
 
-        $subTotal = 0;
-
         if ($cart_items->count() > 0) {
-            collect($cart_items)->each(function ($item) use (&$subTotal) {
-                $price = 0;
+            collect($cart_items)->each(function ($item) {
                 if ($item->product) {
                     $item->product->product_image = asset($item->product->product_image);
 
@@ -67,42 +64,21 @@ class CartController extends Controller
                         'description',
                         'additional_description'
                     ]);
-                    $price = $item->product->discount_price > 0 ? $item->product->discount_price : $item->product->regular_price;
                 }
 
                 if ($item->offer) {
                     $item->offer_name = $item->offer->offer_name;
                     $item->offer_price = $item->offer->final_price;
                     $item->offer_image = asset($item->offer->image);
-                    $price = $item->offer->final_price;
                 } else {
                     $item->offer_name = null;
                 }
-                
-                $subTotal += $price;
             });
 
-            // Fetch Delivery Charge
-            $setting = \App\Models\AdminSetting::select('delivery_charge')->first();
-            $deliveryCharge = $setting ? $setting->delivery_charge : 0;
-            $total = $subTotal + $deliveryCharge;
-
-            $response = [
-                'items' => $cart_items,
-                'subtotal' => round($subTotal, 3),
-                'delivery_charge' => round($deliveryCharge, 3),
-                'total' => round($total, 3)
-            ];
-
-            return $this->success($response, 'Cart items retrieved successfully', 200);
+            return $this->success($cart_items, 'Cart items retrieved successfully', 200);
         }
 
-        return $this->success([
-            'items' => [],
-            'subtotal' => 0,
-            'delivery_charge' => 0,
-            'total' => 0
-        ], 'No items in cart', 200);
+        return $this->success([], 'No items in cart', 200);
     }
 
 

@@ -22,6 +22,7 @@ class OrderController extends Controller
     use ApiResponse;
     public function store(Request $request, HesabeService $hesabe)
     {
+
         $validator = Validator::make($request->all(), [
             'name'              => 'required',
             'email'             => 'required|email',
@@ -30,72 +31,17 @@ class OrderController extends Controller
             'town'              => 'required',
             'state'             => 'required',
             'zipcode'           => 'required',
+            // 'cart'              => 'required|array', // Removed as we fetch from DB
+            'subtotal'          => 'required|numeric',
+            'charge'            => 'required|numeric',
+            'total'             => 'required|numeric',
             'payment_method'    => 'required|string|in:cod,hesabe',
-            'promo_code'        => 'nullable|string|exists:promo_codes,code',
+            'promo_code'        => 'nullable',
         ]);
 
         if ($validator->fails()) {
             return $this->error($validator->errors(), 'Validation Error', 422);
         }
-
-        // 1. Calculate Order Totals (Backend Security)
-        $cartItems = Cart::with(['product', 'offer'])->where('user_id', Auth::id())->get();
-
-        if ($cartItems->isEmpty()) {
-            return $this->error([], 'Cart is empty', 400);
-        }
-
-        $subTotal = 0;
-        foreach ($cartItems as $item) {
-            if ($item->p_type == 'offer') {
-                $price = $item->offer ? $item->offer->final_price : 0;
-            } else {
-                $product = $item->product;
-                if ($product) {
-                    $price = $product->discount_price > 0 ? $product->discount_price : $product->regular_price;
-                } else {
-                    $price = 0;
-                }
-            }
-            // Cart table doesn't have quantity for individual rows (it's 1 per row), 
-            // but if you have a quantity column, multiply here. 
-            // Based on previous code, it seems 1 row = 1 item.
-            $subTotal += $price;
-        }
-
-        // Delivery Charge
-        $setting = AdminSetting::first(); // Assuming single setting row
-        $deliveryCharge = $setting ? $setting->delivery_charge : 0;
-
-        // Promo Code Discount
-        $discount = 0;
-        $promoCodeId = null;
-        if ($request->promo_code) {
-            $promo = \App\Models\PromoCode::where('code', $request->promo_code)
-                ->where('status', 1)
-                ->first();
-
-            if ($promo) {
-                // Validate expiry, usage, min order amount
-                $isValid = true;
-                if ($promo->expires_at && $promo->expires_at->isPast()) $isValid = false;
-                if ($promo->min_order_amount && $subTotal < $promo->min_order_amount) $isValid = false;
-                // Add more checks if needed (max users, etc)
-
-                if ($isValid) {
-                    $promoCodeId = $promo->id;
-                    if ($promo->type == 'fixed') {
-                        $discount = $promo->value;
-                    } elseif ($promo->type == 'percentage') {
-                        $discount = ($subTotal * $promo->value) / 100;
-                    }
-                }
-            }
-        }
-
-        $totalAmount = ($subTotal + $deliveryCharge) - $discount;
-        if ($totalAmount < 0) $totalAmount = 0;
-
 
         // Lock settings for order number
         $setting = AdminSetting::lockForUpdate()->first();
@@ -104,120 +50,230 @@ class OrderController extends Controller
             : $setting->last_order_number + 1;
 
 
-        DB::beginTransaction();
-        try {
-            // Create order
-            $order = Order::create([
-                'user_id'        => Auth::id(),
-                'order_number'   => $order_number,
-                'payment_method' => $request->payment_method,
-                'sub_total'      => $subTotal,
-                'shipping_cost'  => $deliveryCharge,
-                'total_amount'   => $totalAmount,
-                'promo_code'     => $promoCodeId, // Storing ID or Code? DB schema says integer usually for ID, but request had string. Let's assume ID or handle accordingly.
-                // If promo_code column is string, store code: $request->promo_code
-                // If it's integer (foreign key), store $promoCodeId. 
-                // Checking previous code: 'promo_code' => $request->promo_code (which was nullable).
-                // Let's store the code string for now to match previous behavior, or ID if you prefer.
-                // Reverting to request code to be safe with existing schema unless confirmed.
-                'promo_code'     => $request->promo_code, 
-                'discount_amount'=> $discount, // If you have this column
-                'placed_at'      => now(),
-                'is_paid'        => false,
-                'payment_status' => 'pending',
-            ]);
+        // ----------------------
+        // Cash on Delivery Flow
+        // ----------------------
+        if ($request->payment_method === 'cod') {
+            DB::beginTransaction();
+            try {
 
-            // Billing Info
-            OrderBillingInfo::create([
-                'order_id' => $order->id,
-                'name'     => $request->name,
-                'email'    => $request->email,
-                'phone'    => $request->phone,
-                'address'  => $request->address,
-                'town'     => $request->town,
-                'state'    => $request->state,
-                'zipcode'  => $request->zipcode,
-            ]);
+                // Create order
+                $order = Order::create([
+                    'user_id'        => Auth::id(),
+                    'order_number'   => $order_number,
+                    'payment_method' => 'cod',
+                    'sub_total'      => $request->subtotal,
+                    'shipping_cost'  => $request->charge,
+                    'total_amount'   => $request->total,
+                    'promo_code'     => $request->promo_code,
+                    'placed_at'      => now(),
+                    'is_paid'        => false,
+                    'payment_status' => 'pending',
+                ]);
 
-            // Group items to calculate quantity (Logic from previous refactor)
-            $groupedCart = $cartItems->groupBy(function ($item) {
-                $id = $item->p_type == 'offer' ? $item->offer_id : $item->product_id;
-                return $id . '-' . ($item->p_type ?? 'product');
-            });
 
-            foreach ($groupedCart as $group) {
-                $firstItem = $group->first();
-                $quantity = $group->count();
-                $type = $firstItem->p_type ?? 'product';
-                $itemId = $type == 'offer' ? $firstItem->offer_id : $firstItem->product_id;
+                // Billing Info
+                OrderBillingInfo::create([
+                    'order_id' => $order->id,
+                    'name'     => $request->name,
+                    'email'    => $request->email,
+                    'phone'    => $request->phone,
+                    'address'  => $request->address,
+                    'town'     => $request->town,
+                    'state'    => $request->state,
+                    'zipcode'  => $request->zipcode,
+                ]);
 
-                if ($type == 'offer') {
-                    $offer = \App\Models\Offer::with('products')->find($itemId);
-                    if (!$offer) throw new Exception('Offer not found ID: ' . $itemId);
-                    
-                    // Check inventory for all products in offer
-                    foreach ($offer->products as $product) {
-                            $inventory = Inventory::where('product_id', $product->id)->first();
-                            if (!$inventory || $quantity > $inventory->quantity) {
-                                throw new Exception('Product out of stock in offer: ' . $product->product_name);
-                            }
-                    }
+                // Fetch Cart from DB
+                $cartItems = Cart::where('user_id', Auth::id())->get();
 
-                    OrderItemDetail::create([
-                        'order_id'   => $order->id,
-                        'offer_id'   => $itemId,
-                        'quantity'   => $quantity,
-                    ]);
+                if ($cartItems->isEmpty()) {
+                    DB::rollBack();
+                    return $this->error([], 'Cart is empty', 400);
+                }
 
-                    // Decrement inventory (Only for COD or if we reserve for Hesabe too? 
-                    // Previous code: COD decrements immediately. Hesabe did NOT decrement in store().
-                    // Let's keep that logic: Decrement ONLY if COD.
-                    if ($request->payment_method === 'cod') {
-                        foreach ($offer->products as $product) {
-                                $inventory = Inventory::where('product_id', $product->id)->first();
-                                $inventory->decrement('quantity', $quantity);
+                // Group items to calculate quantity
+                $groupedCart = $cartItems->groupBy(function ($item) {
+                    $id = $item->p_type == 'offer' ? $item->offer_id : $item->product_id;
+                    return $id . '-' . ($item->p_type ?? 'product');
+                });
+
+                foreach ($groupedCart as $group) {
+                    $firstItem = $group->first();
+                    $quantity = $group->count();
+                    $type = $firstItem->p_type ?? 'product';
+                    $itemId = $type == 'offer' ? $firstItem->offer_id : $firstItem->product_id;
+
+                    if ($type == 'offer') {
+                        $offer = \App\Models\Offer::with('products')->find($itemId);
+                        if (!$offer) {
+                            DB::rollBack();
+                            return $this->error([], 'Offer not found ID: ' . $itemId, 404);
                         }
-                    }
+                        
+                        // Check inventory for all products in offer
+                        foreach ($offer->products as $product) {
+                             $inventory = Inventory::where('product_id', $product->id)->first();
+                             if (!$inventory || $quantity > $inventory->quantity) {
+                                 DB::rollBack();
+                                 return $this->error([], 'Product out of stock in offer: ' . $product->product_name, 409);
+                             }
+                        }
 
-                } else {
-                    $inventory = Inventory::where('product_id', $itemId)->first();
-                    if (!$inventory) throw new Exception('Inventory not found for product ID: ' . $itemId);
-                    if ($quantity > $inventory->quantity) throw new Exception('Product quantity out of stock for product ID: ' . $itemId);
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'offer_id'   => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
 
-                    OrderItemDetail::create([
-                        'order_id'   => $order->id,
-                        'product_id' => $itemId,
-                        'quantity'   => $quantity,
-                    ]);
+                        // Decrement inventory
+                        foreach ($offer->products as $product) {
+                             $inventory = Inventory::where('product_id', $product->id)->first();
+                             $inventory->decrement('quantity', $quantity);
+                        }
 
-                    if ($request->payment_method === 'cod') {
+                    } else {
+                        $inventory = Inventory::where('product_id', $itemId)->first();
+                        if (!$inventory) {
+                            DB::rollBack();
+                            return $this->error([], 'Inventory not found for product ID: ' . $itemId, 404);
+                        }
+                        if ($quantity > $inventory->quantity) {
+                            DB::rollBack();
+                            return $this->error([], 'Product quantity out of stock for product ID: ' . $itemId, 409);
+                        }
+    
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'product_id' => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+    
                         $inventory->decrement('quantity', $quantity);
                     }
                 }
+
+                DB::commit();
+                $setting->last_order_number = $order_number;
+                $setting->save();
+
+                // after commit cart delete 
+                Cart::where('user_id', Auth::id())->delete();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Order placed successfully.',
+                    'redirect_url' => route('cash.order.popup'),
+                ]);
+            } catch (Exception $e) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Server Error: ' . $e->getMessage(),
+                    'line' => $e->getLine(),
+                    'file' => $e->getFile(),
+                ], 500);
             }
+        }
 
-            DB::commit();
-            $setting->last_order_number = $order_number;
-            $setting->save();
+        // ----------------------
+        // Hesabe Payment Flow
+        // ----------------------
 
-            // Handle Response based on Payment Method
-            if ($request->payment_method === 'hesabe') {
-                // Send Hesabe payload
+
+        if ($request->payment_method === 'hesabe') {
+            DB::beginTransaction();
+            try {
+                // 1. Lock settings
+                $setting = AdminSetting::lockForUpdate()->first();
+                $order_number = is_null($setting->last_order_number)
+                    ? $setting->invoice_number
+                    : $setting->last_order_number + 1;
+
+
+
+                // 2. Create order (do NOT decrement inventory yet)
+                $order = Order::create([
+                    'user_id'        => Auth::id(),
+                    'order_number'   => $order_number,
+                    'payment_method' => 'hesabe',
+                    'sub_total'      => $request->subtotal,
+                    'shipping_cost'  => $request->charge,
+                    'total_amount'   => $request->total,
+                    'promo_code'     => $request->promo_code,
+                    'placed_at'      => now(),
+                    'is_paid'        => false,
+                    'payment_status' => 'pending',
+                ]);
+
+                // 3. Billing info
+                OrderBillingInfo::create([
+                    'order_id' => $order->id,
+                    'name'     => $request->name,
+                    'email'    => $request->email,
+                    'phone'    => $request->phone,
+                    'address'  => $request->address,
+                    'town'     => $request->town,
+                    'state'    => $request->state,
+                    'zipcode'  => $request->zipcode,
+                ]);
+
+                // Fetch Cart from DB
+                $cartItems = Cart::where('user_id', Auth::id())->get();
+
+                if ($cartItems->isEmpty()) {
+                    DB::rollBack();
+                    return $this->error([], 'Cart is empty', 400);
+                }
+
+                // Group items to calculate quantity
+                $groupedCart = $cartItems->groupBy(function ($item) {
+                    $id = $item->p_type == 'offer' ? $item->offer_id : $item->product_id;
+                    return $id . '-' . ($item->p_type ?? 'product');
+                });
+
+                foreach ($groupedCart as $group) {
+                    $firstItem = $group->first();
+                    $quantity = $group->count();
+                    $type = $firstItem->p_type ?? 'product';
+                    $itemId = $type == 'offer' ? $firstItem->offer_id : $firstItem->product_id;
+                    
+                    if ($type == 'offer') {
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'offer_id'   => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+                    } else {
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'product_id' => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+                    }
+                }
+
+                DB::commit();
+                $setting->last_order_number = $order_number;
+                $setting->save();
+
+                // 5. Send Hesabe payload
                 $payload = [
-                    'amount' => number_format((float)$totalAmount, 3, '.', ''),
+                    'amount' => number_format((float)$request->total, 3, '.', ''),
                     'currency' => 'KWD',
                     'responseUrl' => route('hesabe.callback'),
                     'failureUrl'  => route('hesabe.failed'),
                     'orderReferenceNumber' => (string) $order_number,
-                    'cardType' => (string) $request->card_type, // Ensure this is passed if needed
-                    'paymentType' => (string) $request->paymentType, // Ensure this is passed if needed
+                    'cardType' => (string) $request->card_type,
+                    'paymentType' => (string) $request->paymentType,
                 ];
 
+
                 $response = $hesabe->createCheckout($payload);
-                
-                // Clear cart after generating payment link? 
-                // Usually we wait for success, but previous code cleared it. 
-                // Let's clear it to avoid double ordering.
+
+
+                // after commit cart delete 
                 Cart::where('user_id', Auth::id())->delete();
 
                 return $this->success([
@@ -225,20 +281,12 @@ class OrderController extends Controller
                     'order_id'      => $order->id,
                     'order_number'  => $order_number,
                 ], 'Proceed to payment', 201);
-            } else {
-                // COD
-                Cart::where('user_id', Auth::id())->delete();
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Order placed successfully.',
-                    'redirect_url' => route('cash.order.popup'),
-                ]);
+            } catch (Exception $e) {
+                DB::rollBack();
+                return $this->error([], 'Server Error: ' . $e->getMessage(), 500);
             }
-
-        } catch (Exception $e) {
-            DB::rollBack();
-            return $this->error([], 'Server Error: ' . $e->getMessage(), 500);
         }
+        return $this->error([], 'Invalid payment method', 400);
     }
 
     // public function store(Request $request)
