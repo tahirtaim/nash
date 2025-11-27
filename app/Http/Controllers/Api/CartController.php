@@ -44,7 +44,7 @@ class CartController extends Controller
             'p_type' =>  $type
         ]);
 
-        return $this->success([], 'Product added to cart successfully', 200);
+        return $this->success([], 'Item added to cart successfully', 200);
     }
 
 

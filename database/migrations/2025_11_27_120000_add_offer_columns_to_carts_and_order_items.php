@@ -12,13 +12,19 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('carts', function (Blueprint $table) {
-            $table->foreignId('offer_id')->nullable()->constrained('offers')->onDelete('cascade');
-            $table->string('p_type')->nullable(); // 'product' or 'offer'
+            if (!Schema::hasColumn('carts', 'offer_id')) {
+                $table->foreignId('offer_id')->nullable()->constrained('offers')->onDelete('cascade');
+            }
+            if (!Schema::hasColumn('carts', 'p_type')) {
+                $table->string('p_type')->nullable(); // 'product' or 'offer'
+            }
             $table->foreignId('product_id')->nullable()->change();
         });
 
         Schema::table('order_item_details', function (Blueprint $table) {
-            $table->foreignId('offer_id')->nullable()->constrained('offers')->onDelete('cascade');
+            if (!Schema::hasColumn('order_item_details', 'offer_id')) {
+                $table->foreignId('offer_id')->nullable()->constrained('offers')->onDelete('cascade');
+            }
             $table->foreignId('product_id')->nullable()->change();
         });
     }
