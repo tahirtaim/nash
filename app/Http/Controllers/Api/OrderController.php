@@ -94,14 +94,15 @@ class OrderController extends Controller
 
                 // Group items to calculate quantity
                 $groupedCart = $cartItems->groupBy(function ($item) {
-                    return $item->product_id . '-' . ($item->p_type ?? 'product');
+                    $id = $item->p_type == 'offer' ? $item->offer_id : $item->product_id;
+                    return $id . '-' . ($item->p_type ?? 'product');
                 });
 
                 foreach ($groupedCart as $group) {
                     $firstItem = $group->first();
                     $quantity = $group->count();
                     $type = $firstItem->p_type ?? 'product';
-                    $itemId = $firstItem->product_id;
+                    $itemId = $type == 'offer' ? $firstItem->offer_id : $firstItem->product_id;
 
                     if ($type == 'offer') {
                         $offer = \App\Models\Offer::with('products')->find($itemId);
@@ -228,14 +229,15 @@ class OrderController extends Controller
 
                 // Group items to calculate quantity
                 $groupedCart = $cartItems->groupBy(function ($item) {
-                    return $item->product_id . '-' . ($item->p_type ?? 'product');
+                    $id = $item->p_type == 'offer' ? $item->offer_id : $item->product_id;
+                    return $id . '-' . ($item->p_type ?? 'product');
                 });
 
                 foreach ($groupedCart as $group) {
                     $firstItem = $group->first();
                     $quantity = $group->count();
                     $type = $firstItem->p_type ?? 'product';
-                    $itemId = $firstItem->product_id;
+                    $itemId = $type == 'offer' ? $firstItem->offer_id : $firstItem->product_id;
                     
                     if ($type == 'offer') {
                         OrderItemDetail::create([
