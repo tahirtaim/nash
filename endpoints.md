@@ -337,6 +337,36 @@
 {}
 ```
 
+**Example Response:**
+
+```json
+{
+  "success": true,
+  "message": "Cart items retrieved successfully",
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "user_id": 1,
+        "product_id": 1,
+        "offer_id": null,
+        "p_type": "product",
+        "product": {
+          "id": 1,
+          "product_name": "T-Shirt",
+          "product_image": "http://...",
+          "regular_price": 100,
+          "discount_price": 90
+        }
+      }
+    ],
+    "subtotal": 90,
+    "delivery_charge": 5,
+    "total": 95
+  }
+}
+```
+
 ### Delete Cart
 
 **Endpoint:** `POST /api/delete-cart`
@@ -709,8 +739,8 @@
 **Parameters:**
 
 - `name`, `email`, `phone`, `address`, `town`, `state`, `zipcode` (string, required).
-- `subtotal`, `charge`, `total` (numeric, required).
 - `payment_method` (string, required): 'cod' or 'hesabe'.
+- `promo_code` (string, optional).
   **Example Request:**
 
 ```json
@@ -723,9 +753,7 @@
   "state": "State",
   "zipcode": "12345",
   "payment_method": "cod",
-  "subtotal": 100,
-  "charge": 5,
-  "total": 105
+  "promo_code": "SAVE10"
 }
 ```
 
