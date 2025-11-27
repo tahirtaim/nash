@@ -14,12 +14,18 @@ class OrderItemDetail extends Model
         'quantity',
         'price',
         'item_total',
+        'offer_id',
     ];
 
 
     public function product()
     {
         return $this->belongsTo(Product::class, 'product_id');
+    }
+
+    public function offer()
+    {
+        return $this->belongsTo(Offer::class, 'offer_id');
     }
 
 

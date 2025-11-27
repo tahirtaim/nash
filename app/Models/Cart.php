@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Cart extends Model
 {
-    protected $fillable = ['user_id', 'product_id', 'p_type'];
+    protected $fillable = ['user_id', 'product_id', 'offer_id', 'p_type'];
 
     public function product()
     {
@@ -14,7 +14,7 @@ class Cart extends Model
     }
 
     public function offer(){
-        return $this->belongsTo(Offer::class,'product_id');
+        return $this->belongsTo(Offer::class, 'offer_id');
     }
     
 }

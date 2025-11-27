@@ -16,23 +16,31 @@ class CartController extends Controller
     {
 
         $validator = Validator::make($request->all(), [
-            'product_id' => 'required|integer|exists:products,id',
+            'product_id' => 'required|integer',
+            'p_type' => 'nullable|string|in:product,offer',
         ]);
-
 
         if ($validator->fails()) {
             return $this->error($validator->errors(), 'Validation Error', 422);
         }
 
-        $type = null;
-        if ($request->p_type) {
-            $type = $request->p_type;
+        $type = $request->p_type ?? 'product';
+        
+        if ($type == 'offer') {
+             if (!\App\Models\Offer::find($request->product_id)) {
+                 return $this->error([], 'Offer not found', 404);
+             }
+        } else {
+             if (!\App\Models\Product::find($request->product_id)) {
+                 return $this->error([], 'Product not found', 404);
+             }
         }
 
         $id = Auth::guard('api')->user()->id;
         Cart::create([
             'user_id' =>  $id,
-            'product_id' => $request->product_id,
+            'product_id' => $type == 'product' ? $request->product_id : null,
+            'offer_id' => $type == 'offer' ? $request->product_id : null,
             'p_type' =>  $type
         ]);
 
@@ -43,7 +51,7 @@ class CartController extends Controller
     public function getCartItems(Request $request)
     {
         $id = Auth::guard('api')->user()->id;
-        $cart_items = Cart::with('product')->where('user_id', $id)->get();
+        $cart_items = Cart::with(['product', 'offer'])->where('user_id', $id)->get();
 
         if ($cart_items->count() > 0) {
             collect($cart_items)->each(function ($item) {
@@ -58,7 +66,13 @@ class CartController extends Controller
                     ]);
                 }
 
-                $item->offer_name = $item->offer->offer_name ?? null;;
+                if ($item->offer) {
+                    $item->offer_name = $item->offer->offer_name;
+                    $item->offer_price = $item->offer->final_price;
+                    $item->offer_image = asset($item->offer->image);
+                } else {
+                    $item->offer_name = null;
+                }
             });
 
             return $this->success($cart_items, 'Cart items retrieved successfully', 200);

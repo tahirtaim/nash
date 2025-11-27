@@ -31,9 +31,7 @@ class OrderController extends Controller
             'town'              => 'required',
             'state'             => 'required',
             'zipcode'           => 'required',
-            'cart'              => 'required|array',
-            'cart.*.product_id' => 'required|integer|exists:products,id',
-            'cart.*.quantity'   => 'required|integer|min:1',
+            // 'cart'              => 'required|array', // Removed as we fetch from DB
             'subtotal'          => 'required|numeric',
             'charge'            => 'required|numeric',
             'total'             => 'required|numeric',
@@ -86,25 +84,72 @@ class OrderController extends Controller
                     'zipcode'  => $request->zipcode,
                 ]);
 
-                // Order Items & Inventory
-                foreach ($request->cart as $item) {
-                    $inventory = Inventory::where('product_id', $item['product_id'])->first();
-                    if (!$inventory) {
-                        DB::rollBack();
-                        return $this->error([], 'Inventory not found for product ID: ' . $item['product_id'], 404);
-                    }
-                    if ($item['quantity'] > $inventory->quantity) {
-                        DB::rollBack();
-                        return $this->error([], 'Product quantity out of stock for product ID: ' . $item['product_id'], 409);
-                    }
+                // Fetch Cart from DB
+                $cartItems = Cart::where('user_id', Auth::id())->get();
 
-                    OrderItemDetail::create([
-                        'order_id'   => $order->id,
-                        'product_id' => $item['product_id'],
-                        'quantity'   => $item['quantity'],
-                    ]);
+                if ($cartItems->isEmpty()) {
+                    DB::rollBack();
+                    return $this->error([], 'Cart is empty', 400);
+                }
 
-                    $inventory->decrement('quantity', $item['quantity']);
+                // Group items to calculate quantity
+                $groupedCart = $cartItems->groupBy(function ($item) {
+                    return $item->product_id . '-' . ($item->p_type ?? 'product');
+                });
+
+                foreach ($groupedCart as $group) {
+                    $firstItem = $group->first();
+                    $quantity = $group->count();
+                    $type = $firstItem->p_type ?? 'product';
+                    $itemId = $firstItem->product_id;
+
+                    if ($type == 'offer') {
+                        $offer = \App\Models\Offer::with('products')->find($itemId);
+                        if (!$offer) {
+                            DB::rollBack();
+                            return $this->error([], 'Offer not found ID: ' . $itemId, 404);
+                        }
+                        
+                        // Check inventory for all products in offer
+                        foreach ($offer->products as $product) {
+                             $inventory = Inventory::where('product_id', $product->id)->first();
+                             if (!$inventory || $quantity > $inventory->quantity) {
+                                 DB::rollBack();
+                                 return $this->error([], 'Product out of stock in offer: ' . $product->product_name, 409);
+                             }
+                        }
+
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'offer_id'   => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+
+                        // Decrement inventory
+                        foreach ($offer->products as $product) {
+                             $inventory = Inventory::where('product_id', $product->id)->first();
+                             $inventory->decrement('quantity', $quantity);
+                        }
+
+                    } else {
+                        $inventory = Inventory::where('product_id', $itemId)->first();
+                        if (!$inventory) {
+                            DB::rollBack();
+                            return $this->error([], 'Inventory not found for product ID: ' . $itemId, 404);
+                        }
+                        if ($quantity > $inventory->quantity) {
+                            DB::rollBack();
+                            return $this->error([], 'Product quantity out of stock for product ID: ' . $itemId, 409);
+                        }
+    
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'product_id' => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+    
+                        $inventory->decrement('quantity', $quantity);
+                    }
                 }
 
                 DB::commit();
@@ -173,13 +218,38 @@ class OrderController extends Controller
                     'zipcode'  => $request->zipcode,
                 ]);
 
-                // 4. Create order items (do NOT decrement inventory yet)
-                foreach ($request->cart as $item) {
-                    OrderItemDetail::create([
-                        'order_id'   => $order->id,
-                        'product_id' => $item['product_id'],
-                        'quantity'   => $item['quantity'],
-                    ]);
+                // Fetch Cart from DB
+                $cartItems = Cart::where('user_id', Auth::id())->get();
+
+                if ($cartItems->isEmpty()) {
+                    DB::rollBack();
+                    return $this->error([], 'Cart is empty', 400);
+                }
+
+                // Group items to calculate quantity
+                $groupedCart = $cartItems->groupBy(function ($item) {
+                    return $item->product_id . '-' . ($item->p_type ?? 'product');
+                });
+
+                foreach ($groupedCart as $group) {
+                    $firstItem = $group->first();
+                    $quantity = $group->count();
+                    $type = $firstItem->p_type ?? 'product';
+                    $itemId = $firstItem->product_id;
+                    
+                    if ($type == 'offer') {
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'offer_id'   => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+                    } else {
+                        OrderItemDetail::create([
+                            'order_id'   => $order->id,
+                            'product_id' => $itemId,
+                            'quantity'   => $quantity,
+                        ]);
+                    }
                 }
 
                 DB::commit();
@@ -200,6 +270,9 @@ class OrderController extends Controller
 
                 $response = $hesabe->createCheckout($payload);
 
+
+                // after commit cart delete 
+                Cart::where('user_id', Auth::id())->delete();
 
                 return $this->success([
                     'payment_url'   => $response['payment_url'],
@@ -298,12 +371,21 @@ class OrderController extends Controller
                 'total_amount' => $order->total_amount,
                 'status' => $order->status,
                 'items' => $order->items->map(function ($item) {
+                    if ($item->offer_id) {
+                        return [
+                            'offer_id' => $item->offer_id,
+                            'name' => $item->offer->offer_name,
+                            'thumbnail' => asset($item->offer->image),
+                            'type' => 'offer',
+                        ];
+                    }
                     return [
                         'product_id' => $item->product_id,
                         'name' => $item->product->product_name,
                         'thumbnail' => $item->product->product_image,
                         'weight_unit' => $item->product->weight_unit,
                         'weight' => $item->product->weight,
+                        'type' => 'product',
                     ];
                 }),
                 'billing' => [
