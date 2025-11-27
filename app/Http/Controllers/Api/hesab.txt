@@ -1,0 +1,87 @@
+<?php
+
+namespace App\Services;
+
+use App\Helpers\HesabeCrypto;
+
+class HesabeService
+{
+    protected $baseUrl;
+    protected $merchantCode;
+    protected $accessCode;
+    protected $secretKey;
+    protected $aesKey;
+
+    public function __construct()
+    {
+        $this->baseUrl      = env('HESABE_BASE_URL');
+        $this->merchantCode = env('HESABE_MERCHANT_CODE');
+        $this->accessCode   = env('HESABE_ACCESS_CODE');
+        $this->secretKey    = env('HESABE_SECRET_KEY');
+        $this->aesKey       = env('HESABE_IV_KEY');
+    }
+
+    public function createPayment()
+    {
+        $payload = [
+            "merchantCode"         => $this->merchantCode,
+            "amount"               => "10",
+            "currency"             => "KWD",
+            "responseUrl"          => route('hesabe.callback'),
+            "failureUrl"           => route('hesabe.failed'),
+            "orderReferenceNumber" => uniqid("ORD-"),
+            "variable1"            => "extra-info"
+        ];
+
+
+
+        $crypto = new HesabeCrypto();
+        // $encryptedData = $crypto->encrypt(json_encode($payload), $this->secretKey, $this->aesKey);
+
+        $client = new \GuzzleHttp\Client();
+        $response = $client->post($this->baseUrl . '/checkout', [
+            'headers' => [
+                'accessCode' => $this->accessCode,
+                'Accept'     => 'application/json'
+            ],
+            'form_params' => [
+                'data' => $payload
+            ]
+        ]);
+        dd($response);
+        $result = json_decode($response->getBody(), true);
+
+
+        // ⚠ Check if 'response' exists
+        if (!isset($result['response']['data'])) {
+            // dd($result);
+            return [
+                "status" => false,
+                "message" => "Hesabe API returned unexpected response",
+                "data" => $result
+            ];
+            dd('ok');
+        }
+        // dd('ok');
+        $decryptedData = $crypto->decrypt($result['response']['data'], $this->secretKey, $this->aesKey);
+        // dd('ok');
+        $paymentData = json_decode($decryptedData, true);
+
+        return [
+            "status" => true,
+            "message" => "Redirect to Hesabe",
+            "data" => ["payment_url" => $paymentData['paymentUrl'] ?? null]
+        ];
+    }
+
+
+
+
+
+
+    public function handleCallback(array $requestData)
+    {
+        $decrypted = HesabeCrypto::decrypt($requestData['data'], $this->secretKey, $this->aesKey);
+        return json_decode($decrypted, true);
+    }
+}

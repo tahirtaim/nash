@@ -1,0 +1,28 @@
+on: # কোন event এ trigger হবে
+  push:
+    branches:
+      - main
+
+jobs:
+  build: # প্রথমে build/test করা
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm install
+      - name: Run tests
+        run: npm test
+
+  deploy: # build/test সফল হলে deploy করা
+    needs: build # build job শেষ হতে হবে
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Deploy to server
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ftp.allurdevine.net
+          username: mohammednash@mohammednash.allurdevine.net
+          password: 8xHWR)bceIOX
